@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang='en-US'>
+
+<head>
+  <meta charset="utf-8">
+  <title>PixelProblems</title>
+</head>
+
+<body>
+  <span>PixelProblems</span>
+
+  <button id="authorize-button" style="display: none;">Authorize</button>
+  <button id="signout-button" style="display: none;">Sign Out</button>
+
+  <form id="form" style="display: none;" onsubmit="return onFormSubmit(event)">
+    <img id="image-img" alt="Image Preview" style="float: right;">
+    <p>
+      <label for="spreadsheet-id">Spreadsheet ID or URL</label>
+      <input type="text" id="spreadsheet-id" name="spreadsheet-id" required>
+    </p>
+    <p>
+      <label for="image">Image</label>
+      <input type="file" accept="image/*" id="image" name="image" required>
+    </p>
+    <p>
+      <label for="columns">Columns</label>
+      <input type="number" id="columns" name="columns" min="1" max="60" value="24" required>
+    </p>
+    <input type="submit" id="submit" value="Generate Spreadsheet">
+  </form>
+
+  <div id="content"></div>
+
+  <script>
+    const CLIENT_ID = '128996879672-3116p8e5h59b7l26tk91i35p9jvrdq4p.apps.googleusercontent.com';
+    const DISCOVERY_DOCS = ["https://sheets.googleapis.com/$discovery/rest?version=v4"];
+    const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
+
+    const RGBA_COMPONENTS = 4;
+    const R_INDEX = 0;
+    const G_INDEX = 1;
+    const B_INDEX = 2;
+    const A_INDEX = 3;
+    const RGBA_MAX = 255;
+
+    // Column offset for image data in the spreadsheet, skipping over the
+    // "Problem" and "Answer" columns.
+    const IMAGE_COLUMN_OFFSET = 2;
+
+    const INIT_COLUMN_COUNT = 26;
+    const INIT_IMAGE_COLUMN_COUNT = INIT_COLUMN_COUNT - IMAGE_COLUMN_OFFSET;
+
+    const ROW_HEIGHT_PX = 25;
+    const COLUMN_WIDTH_PX = 100;
+    const IMAGE_COLUMN_WIDTH_PX = 25;
+
+    const SPREADSHEET_ID_RE = new RegExp('docs.google.com/spreadsheets/d/([^/]+)', 'i');
+
+    var authorizeButton = document.getElementById('authorize-button');
+    var signoutButton = document.getElementById('signout-button');
+    var spreadsheetId = document.getElementById('spreadsheet-id');
+    var image = document.getElementById('image');
+    var imageImg = document.getElementById('image-img');
+    var columns = document.getElementById('columns');
+    var content = document.getElementById('content');
+
+    window.onload = _ => {
+      image.onchange = handleImageChange;
+      if (image.files.length)
+        handleImage(image.files[0]);
+    };
+
+    function initClient() {
+      gapi.client.init({
+        clientId: CLIENT_ID, discoveryDocs: DISCOVERY_DOCS, scope: SCOPES
+      }).then(() => {
+        gapi.auth2.getAuthInstance().isSignedIn.listen(updateSigninStatus);
+        updateSigninStatus(gapi.auth2.getAuthInstance().isSignedIn.get());
+        authorizeButton.onclick = handleAuthClick;
+        signoutButton.onclick = handleSignoutClick;
+      }, (error) => {
+        log(error);
+        log('Try refreshing the page.');
+      });
+    }
+
+    function updateSigninStatus(isSignedIn) {
+      if (isSignedIn) {
+        authorizeButton.style.display = 'none';
+        signoutButton.style.display = 'inline';
+        form.style.display = 'block';
+      } else {
+        authorizeButton.style.display = 'inline';
+        signoutButton.style.display = 'none';
+        form.style.display = 'none';
+      }
+    }
+
+    function handleAuthClick(event) {
+      gapi.auth2.getAuthInstance().signIn();
+    }
+
+    function handleSignoutClick(event) {
+      gapi.auth2.getAuthInstance().signOut();
+    }
+
+    function handleImageChange(event) {
+      handleImage(this.files[0]);
+    }
+
+    async function onFormSubmit(event) {
+      event.preventDefault();
+      submit.disabled = true;
+      try {
+        await run();
+      } catch (error) {
+        console.log(error);
+        log(error);
+      }
+      submit.disabled = false;
+      return false;
+    }
+
+    function handleImage(file) {
+      imageImg.file = file;
+      const reader = new FileReader();
+      reader.onload = (e) => {imageImg.src = e.target.result}
+      reader.readAsDataURL(imageImg.file);
+    }
+
+    function shuffle(arr) {
+      return arr
+        .map(a => [Math.random(), a])
+        .sort((a, b) => a[0] - b[0])
+        .map(a => a[1]);
+    }
+
+    async function copyRangeFromTo(range, fromSpreadsheetId, toSpreadsheetId) {
+      await gapi.client.sheets.spreadsheets.values.get({
+        spreadsheetId: fromSpreadsheetId,
+        range: range
+      }).then(async (response) => {
+        await gapi.client.sheets.spreadsheets.values.update({
+          spreadsheetId: toSpreadsheetId,
+          range: range,
+          valueInputOption: 'RAW'
+        }, {
+          values: response.result.values
+        });
+      });
+    }
+
+    async function run() {
+      var response;
+      logRule();
+      let oldSpreadsheetId = spreadsheetId.value;
+      let spreadsheetIdMatch = oldSpreadsheetId.match(SPREADSHEET_ID_RE);
+      if (spreadsheetIdMatch !== null) {
+        oldSpreadsheetId = spreadsheetIdMatch[1];
+      }
+      let numColumns = columns.value;
+      response = await gapi.client.sheets.spreadsheets.values.get({
+        spreadsheetId: oldSpreadsheetId,
+        range: 'B2:B'
+      });
+      let answers = [];
+      for (const values of response.result.values)
+        answers.push(values[0]);
+      let canvas = document.createElement('canvas');
+      let scale = numColumns / imageImg.width;
+      canvas.width = Math.floor(imageImg.width * scale);
+      canvas.height = Math.floor(imageImg.height * scale);
+      canvas.getContext('2d').drawImage(imageImg, 0, 0, canvas.width, canvas.height);
+      var px = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+      let rows = [];
+      let ranges = [];
+      for (let row = 0; row < px.height; ++row) {
+        let cols = [];
+        for (let col = 0; col < px.width; ++col) {
+          ranges.push({
+            startRowIndex: row,
+            endRowIndex: row + 1,
+            startColumnIndex: col + IMAGE_COLUMN_OFFSET,
+            endColumnIndex: col + IMAGE_COLUMN_OFFSET + 1
+          });
+          let i = RGBA_COMPONENTS * (row * px.width + col);
+          let r = px.data[i + R_INDEX] / RGBA_MAX;
+          let g = px.data[i + G_INDEX] / RGBA_MAX;
+          let b = px.data[i + B_INDEX] / RGBA_MAX;
+          let a = px.data[i + A_INDEX] / RGBA_MAX;
+          let border = {style: 'NONE'};
+          // FIXME: a hack to make fully transparent backgrounds white, rather
+          // than black, as that seems to be a more useful default and matches
+          // the default style of google sheets.
+          if (r == 0 && g == 0 && b == 0 && a == 0)
+            r = g = b = a = 255;
+          cols.push({
+            userEnteredFormat: {
+              backgroundColor: {red: r, green: g, blue: b, alpha: a},
+              borders: {top: border, bottom: border, left: border, right: border}
+            }
+          });
+        }
+        rows.push({values: cols});
+      }
+      ranges = shuffle(ranges);
+      let requests = [{
+        updateDimensionProperties: {
+          fields: 'pixelSize',
+          properties: {pixelSize: ROW_HEIGHT_PX},
+          range: {dimension: "ROWS", startIndex: 0, endIndex: px.height}
+        }
+      }, {
+        updateDimensionProperties: {
+          fields: 'pixelSize',
+          properties: {pixelSize: COLUMN_WIDTH_PX},
+          range: {dimension: "COLUMNS", startIndex: 0, endIndex: 2}
+        }
+      }, {
+        updateDimensionProperties: {
+          fields: 'pixelSize',
+          properties: {pixelSize: IMAGE_COLUMN_WIDTH_PX},
+          range: {
+            dimension: "COLUMNS",
+            startIndex: IMAGE_COLUMN_OFFSET,
+            endIndex: IMAGE_COLUMN_OFFSET + numColumns
+          }
+        }
+      }, {
+        updateCells: {
+          fields: 'userEnteredFormat.backgroundColor,userEnteredFormat.borders',
+          start: {rowIndex: 0, columnIndex: IMAGE_COLUMN_OFFSET},
+          rows: rows
+        }
+      }, {
+        updateCells: {
+          fields: 'userEnteredFormat',
+          start: {rowIndex: 0, columnIndex: 0},
+          rows: [{
+            values: [
+              {userEnteredFormat: {horizontalAlignment: 'CENTER', textFormat: {bold: true}}},
+              {userEnteredFormat: {horizontalAlignment: 'CENTER', textFormat: {bold: true}}}
+            ]
+          }]
+        }
+      }];
+      let rangesPerAnswer = Math.floor(ranges.length / answers.length);
+      for (let i = 0; i < answers.length; ++i) {
+        let base = i * rangesPerAnswer;
+        let answerRanges = [];
+        for (let j = 0; j < rangesPerAnswer; ++j) {
+          answerRanges.push(ranges[base + j]);
+        }
+        requests.push({
+          addConditionalFormatRule: {
+            rule: {
+              ranges: answerRanges,
+              booleanRule: {
+                condition: {
+                  type: 'CUSTOM_FORMULA',
+                  values: [{userEnteredValue: `=$B$${i + IMAGE_COLUMN_OFFSET}<>${answers[i]}`}]
+                },
+                format: {
+                  backgroundColor: {red: 1, green: 1, blue: 1}
+                }
+              }
+            },
+            index: 0
+          }
+        });
+      }
+      response = await gapi.client.sheets.spreadsheets.create({}, {});
+      newSpreadsheetId = response.result.spreadsheetId;
+      newSpreadsheetUrl = response.result.spreadsheetUrl;
+      log('Created new spreadsheet at:');
+      logAnchor(newSpreadsheetUrl);
+      log(`Working on filling it out based on ${oldSpreadsheetId}...`);
+      if (numColumns > INIT_IMAGE_COLUMN_COUNT) {
+        await gapi.client.sheets.spreadsheets.batchUpdate({
+          spreadsheetId: newSpreadsheetId,
+          resource: {
+            requests: [{
+              appendDimension: {
+                dimension: "COLUMNS",
+                length: numColumns - INIT_IMAGE_COLUMN_COUNT
+              }
+            }]
+          }
+        });
+      }
+      let promises = [];
+      promises.push(copyRangeFromTo('A1:B1', oldSpreadsheetId, newSpreadsheetId));
+      promises.push(copyRangeFromTo('A2:A', oldSpreadsheetId, newSpreadsheetId));
+      promises.push(gapi.client.sheets.spreadsheets.batchUpdate({
+        spreadsheetId: newSpreadsheetId,
+        resource: {requests: requests},
+      }));
+      await Promise.all(promises);
+      log('...finished!');
+      return false;
+    }
+
+    function logRule() {
+      let hr = document.createElement('hr');
+      content.appendChild(hr);
+    }
+
+    function logAnchor(url) {
+      let a = document.createElement('a');
+      a.setAttribute('href', url);
+      a.innerText = url;
+      a.style = 'display: block;';
+      content.appendChild(a);
+    }
+
+    function log(text) {
+      let p = document.createElement('p');
+      p.innerText = typeof text === 'string' ? text : JSON.stringify(text);
+      content.appendChild(p);
+    }
+
+  </script>
+
+  <script async defer src="https://apis.google.com/js/api.js"
+    onload="this.onload=() => {}; gapi.load('client:auth2', initClient);"
+    onreadystatechange="if (this.readyState === 'complete') this.onload()">
+    </script>
+</body>
+
+</html>
