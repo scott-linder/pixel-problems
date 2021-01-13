@@ -13,7 +13,6 @@
   <button id="signout-button" style="display: none;">Sign Out</button>
 
   <form id="form" style="display: none;" onsubmit="return onFormSubmit(event)">
-    <img id="image-img" alt="Image Preview" style="float: right;">
     <p>
       <label for="spreadsheet-id">Spreadsheet ID or URL</label>
       <input type="text" id="spreadsheet-id" name="spreadsheet-id" required>
@@ -28,6 +27,8 @@
     </p>
     <input type="submit" id="submit" value="Generate Spreadsheet">
   </form>
+  <canvas id="image-canvas" style="display: none;"></canvas>
+  <canvas id="image-preview"></canvas>
 
   <div id="content"></div>
 
@@ -58,14 +59,20 @@
 
     var authorizeButton = document.getElementById('authorize-button');
     var signoutButton = document.getElementById('signout-button');
+    var form = document.getElementById('form');
     var spreadsheetId = document.getElementById('spreadsheet-id');
     var image = document.getElementById('image');
-    var imageImg = document.getElementById('image-img');
+    var imageCanvas = document.getElementById('image-canvas');
+    var imagePreview = document.getElementById('image-preview');
     var columns = document.getElementById('columns');
     var content = document.getElementById('content');
 
     window.onload = _ => {
       image.onchange = handleImageChange;
+      columns.onchange = (e) => {
+        if (image.files.length)
+          handleImage(image.files[0]);
+      }
       if (image.files.length)
         handleImage(image.files[0]);
     };
@@ -89,10 +96,12 @@
         authorizeButton.style.display = 'none';
         signoutButton.style.display = 'inline';
         form.style.display = 'block';
+        imagePreview.style.display = 'block';
       } else {
         authorizeButton.style.display = 'inline';
         signoutButton.style.display = 'none';
         form.style.display = 'none';
+        imagePreview.style.display = 'none';
       }
     }
 
@@ -122,10 +131,33 @@
     }
 
     function handleImage(file) {
-      imageImg.file = file;
       const reader = new FileReader();
-      reader.onload = (e) => {imageImg.src = e.target.result}
-      reader.readAsDataURL(imageImg.file);
+      reader.onload = (e) => {
+        var imageImg = new Image();
+        imageImg.onload = (f) => {
+          let scale = columns.value / imageImg.width;
+          imageCanvas.width = Math.floor(imageImg.width * scale);
+          imageCanvas.height = Math.floor(imageImg.height * scale);
+          imageCanvas.getContext('2d').drawImage(imageImg, 0, 0, imageCanvas.width, imageCanvas.height);
+          var px = imageCanvas.getContext('2d').getImageData(0, 0, imageCanvas.width, imageCanvas.height);
+          imagePreview.width = imageCanvas.width * IMAGE_COLUMN_WIDTH_PX;
+          imagePreview.height = imageCanvas.height * ROW_HEIGHT_PX;
+          var ctx = imagePreview.getContext('2d');
+          for (let row = 0; row < px.height; ++row) {
+            for (let col = 0; col < px.width; ++col) {
+              let i = RGBA_COMPONENTS * (row * px.width + col);
+              let r = px.data[i + R_INDEX];
+              let g = px.data[i + G_INDEX];
+              let b = px.data[i + B_INDEX];
+              let a = px.data[i + A_INDEX];
+              ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+              ctx.fillRect(col * IMAGE_COLUMN_WIDTH_PX, row * ROW_HEIGHT_PX, IMAGE_COLUMN_WIDTH_PX, ROW_HEIGHT_PX);
+            }
+          }
+        };
+        imageImg.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
     }
 
     function shuffle(arr) {
@@ -158,7 +190,7 @@
       if (spreadsheetIdMatch !== null) {
         oldSpreadsheetId = spreadsheetIdMatch[1];
       }
-      let numColumns = columns.value;
+      let numColumns = imageCanvas.width;
       response = await gapi.client.sheets.spreadsheets.values.get({
         spreadsheetId: oldSpreadsheetId,
         range: 'B2:B'
@@ -166,12 +198,7 @@
       let answers = [];
       for (const values of response.result.values)
         answers.push(values[0]);
-      let canvas = document.createElement('canvas');
-      let scale = numColumns / imageImg.width;
-      canvas.width = Math.floor(imageImg.width * scale);
-      canvas.height = Math.floor(imageImg.height * scale);
-      canvas.getContext('2d').drawImage(imageImg, 0, 0, canvas.width, canvas.height);
-      var px = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+      var px = imageCanvas.getContext('2d').getImageData(0, 0, imageCanvas.width, imageCanvas.height);
       let rows = [];
       let ranges = [];
       for (let row = 0; row < px.height; ++row) {
